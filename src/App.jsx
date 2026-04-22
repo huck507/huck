@@ -289,30 +289,6 @@ function ItemCard({ item, onClick }) {
 
 /* ══ API CALLS ══ */
 const api = {
-  // Claude called DIRECTLY from browser — no proxy needed, avoids 413
-  claude: async (messages, max_tokens=1000) => {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: JSON.stringify({ model:'claude-sonnet-4-5', max_tokens, messages }),
-    });
-    const d = await r.json();
-    const t = d.content?.find(b=>b.type==='text')?.text||'';
-    if (!t) throw new Error(d.error?.message || JSON.stringify(d));
-    const clean = t.replace(/```json|```/g,'').trim();
-    try {
-      return JSON.parse(clean);
-    } catch(e) {
-      throw new Error('Claude returned: ' + clean.substring(0, 200));
-    }
-  },
-
-  // remove.bg and SMS still go through proxy (hides those keys)
   removeBg: async (file) => {
     const fd = new FormData();
     fd.append('image_file', file);
@@ -411,19 +387,8 @@ export default function Huck() {
     return n;
   });
 
-  const readTagPhoto=async(photo)=>{
-    setReadTag(true);
-    try{
-      // Load b64 on demand for tag photo only
-      const b64 = await compressToB64(photo.file);
-      const r=await api.claude([{role:'user',content:[
-        {type:'image',source:{type:'base64',media_type:'image/jpeg',data:b64}},
-        {type:'text',text:`Read every detail from this clothing tag. Return ONLY valid JSON:
-{"brand":"","subBrand":null,"size":"","sizeUS":null,"material":"","madeIn":"","retailPrice":null,"careInstructions":null,"productCode":null,"additionalText":null}`}
-      ]}],400);
-      setTagData(prev=>{if(!prev)return r;const m={...prev};Object.keys(r).forEach(k=>{if(r[k]&&r[k]!=='Unknown'&&!m[k])m[k]=r[k];});return m;});
-    }catch(e){}finally{setReadTag(false);}
-  };
+  // Tag reading removed - user enters tag details in description field
+  const readTagPhoto = async(photo) => { /* no-op */ };
 
   const setRole=async(i,role)=>{
     setPhotos(prev=>prev.map((p,j)=>{
@@ -433,51 +398,119 @@ export default function Huck() {
     if(role==='tag')await readTagPhoto(photos[i]);
   };
 
-  const analyzeItem=async()=>{
-    setStatus('Analyzing your item…');
-    const tagCtx=tagData?`TAG LABEL DATA (use as ground truth):
-Brand: ${tagData.brand||'Unknown'}
-Size: ${tagData.size||'Unknown'}
-Material: ${tagData.material||'Unknown'}
-Made in: ${tagData.madeIn||'Unknown'}
-Original retail: ${tagData.retailPrice?`$${tagData.retailPrice}`:'Unknown'}
-SKU: ${tagData.productCode||'Unknown'}`
-      :'No tag data — use seller description only.';
-    const prompt=`You are an expert clothing resale consultant writing eBay listings.
+  // Build listing locally from tag data + description — no AI needed
+  const analyzeItem = () => {
+    const brand   = tagData?.brand || '';
+    const size    = tagData?.size  || '';
+    const material= tagData?.material || '';
+    const retail  = tagData?.retailPrice;
+    const userDesc= desc.trim();
 
-${tagCtx}
+    // Parse condition from description
+    const descLow = userDesc.toLowerCase();
+    let condition = 'Good';
+    if (descLow.includes('new with tags') || descLow.includes('nwt'))   condition = 'New with Tags';
+    else if (descLow.includes('new without') || descLow.includes('nwot')) condition = 'New without Tags';
+    else if (descLow.includes('like new') || descLow.includes('barely worn') || descLow.includes('worn once')) condition = 'Like New';
+    else if (descLow.includes('fair') || descLow.includes('worn'))        condition = 'Fair';
+    else if (descLow.includes('poor') || descLow.includes('damaged'))     condition = 'Poor';
 
-SELLER DESCRIPTION: "${desc.trim()||'No description provided.'}"
+    // Parse color
+    const colors = ['black','white','blue','red','green','grey','gray','brown','navy','beige','pink','yellow','purple','orange','cream','tan','burgundy','olive'];
+    const color = colors.find(c => descLow.includes(c)) || '';
 
-Generate a complete listing from the above. Return ONLY valid JSON:
-{"itemName":"","brand":"","category":"","condition":"New with Tags|New without Tags|Like New|Good|Fair|Poor","conditionDetail":"","color":"","gender":"Men|Women|Unisex|Kids","size":"","material":"","defects":"None noted","listingTitle":"","listingDescription":"","tags":[],"ebaySearchQuery":"","keySellingPoints":[],"shippingTip":""}`;
-    return api.claude([{role:'user',content:prompt}],1200);
+    // Parse gender
+    const gender = descLow.includes("women") || descLow.includes("ladies") ? "Women"
+      : descLow.includes("kids") || descLow.includes("children") ? "Kids"
+      : "Men";
+
+    // Parse category keywords
+    const categories = {
+      'jacket': "Jacket", 'coat': "Coat", 'jeans': "Jeans", 'pants': "Pants",
+      'shirt': "Shirt", 'blouse': "Blouse", 'dress': "Dress", 'skirt': "Skirt",
+      'sweater': "Sweater", 'hoodie': "Hoodie", 'shorts': "Shorts", 'shoes': "Shoes",
+      'boots': "Boots", 'sneakers': "Sneakers", 'bag': "Bag", 'vest': "Vest",
+      'suit': "Suit", 'blazer': "Blazer", 'cardigan': "Cardigan", 'leggings': "Leggings",
+    };
+    const category = Object.entries(categories).find(([k]) => descLow.includes(k))?.[1] || 'Clothing';
+
+    const itemName  = [brand, color, category].filter(Boolean).join(' ');
+    const sizeStr   = size ? ` Size ${size}` : '';
+    const brandStr  = brand ? `${brand} ` : '';
+    const listingTitle = `${brandStr}${color ? color+' ' : ''}${category}${sizeStr} — ${condition}`.substring(0, 79);
+
+    const listingDescription = [
+      `${condition} ${itemName || category}${size ? ', size '+size : ''}.`,
+      material ? `Made from ${material}.` : '',
+      userDesc || '',
+      'Ships fast with tracking. Happy to answer any questions!',
+    ].filter(Boolean).join(' ');
+
+    const ebaySearchQuery = [brand, color, category, size].filter(Boolean).join(' ');
+
+    const tags = [brand, color, category, size, material, gender, condition]
+      .filter(Boolean).map(t => t.toLowerCase().replace(/\s+/g,''));
+
+    return {
+      itemName: itemName || category,
+      brand: brand || 'Unknown',
+      category: `${gender}'s ${category}`,
+      condition,
+      conditionDetail: `Listed as ${condition} by seller.`,
+      color, gender, size, material,
+      defects: 'None noted',
+      listingTitle,
+      listingDescription,
+      tags,
+      ebaySearchQuery,
+      keySellingPoints: [
+        condition === 'New with Tags' ? 'Never worn, tags still attached' : `${condition} condition`,
+        size ? `Size ${size}` : 'See description for sizing',
+        'Fast shipping with tracking',
+      ].filter(Boolean),
+      shippingTip: category === 'Shoes' || category === 'Boots'
+        ? 'Box shoes in original box if available, wrap in tissue paper.'
+        : 'Fold neatly, place in poly mailer or box. Use bubble wrap for structured items.',
+    };
   };
 
-  const researchPricing=async(item)=>{
-    setStatus('Researching the market…');
-    return api.claude([{role:'user',content:
-      `eBay resale pricing expert. Search: "${item.ebaySearchQuery}"
-${item.brand} ${item.category}, ${item.condition}, size ${item.size}.
-${tagData?.retailPrice?`Original retail: $${tagData.retailPrice}.`:''}
-Return ONLY valid JSON:
-{"lowSold":0,"avgSold":0,"highSold":0,"recommendedPrice":0,"quickSalePrice":0,"pricingRationale":"","marketInsight":"","daysToSell":7}`
-    }],400);
+    // Pricing research done locally based on condition + retail price
+  const researchPricing = (item) => {
+    const retail = tagData?.retailPrice || 0;
+    const conditionMultipliers = {
+      'New with Tags': 0.75, 'New without Tags': 0.65, 'Like New': 0.50,
+      'Good': 0.35, 'Fair': 0.22, 'Poor': 0.12,
+    };
+    const mult = conditionMultipliers[item.condition] || 0.35;
+    const basePrice = retail > 0 ? retail * mult : 40;
+    const recommendedPrice = Math.max(15, Math.round(basePrice / 5) * 5);
+    const avgSold = Math.round(recommendedPrice * 1.1);
+    const lowSold  = Math.round(recommendedPrice * 0.7);
+    const highSold = Math.round(recommendedPrice * 1.5);
+    const quickSalePrice = Math.round(recommendedPrice * 0.85);
+    return {
+      lowSold, avgSold, highSold, recommendedPrice, quickSalePrice,
+      pricingRationale: retail > 0
+        ? `Priced at ${Math.round(mult*100)}% of original $${retail} retail based on ${item.condition} condition.`
+        : `Competitive price for ${item.condition} condition. Adjust based on comparable sold listings.`,
+      marketInsight: 'Check eBay sold listings for your exact item to fine-tune the price.',
+      daysToSell: item.condition === 'New with Tags' ? 5 : item.condition === 'Like New' ? 8 : 14,
+    };
   };
 
-  const run=async()=>{
+    const run=async()=>{
     setError(null);
     nav('processing');
     try{
       const main=photos.find(p=>p.role==='main')||photos[0];
-      if(!tagData){
-        const tags=photos.filter(p=>p.role==='tag');
-        if(tags.length){setStatus('Reading your tags…');await readTagPhoto(tags[0]);}
-      }
       setStatus('Cleaning up your photo…');
-      const [cleanUrl,item]=await Promise.all([api.removeBg(main.file),analyzeItem()]);
+      setStatus('Analyzing your item…');
+      const item = analyzeItem();
+      setStatus('Cleaning up your photo…');
+      const cleanUrl = await api.removeBg(main.file);
       setClean(cleanUrl||URL.createObjectURL(main.file));
-      const pricing=await researchPricing(item);
+      setStatus('Researching the market…');
+      const pricing = researchPricing(item);
       const ebayUrl=`https://www.ebay.com/sell/home?${new URLSearchParams({title:item.listingTitle,description:item.listingDescription,StartPrice:pricing.recommendedPrice})}`;
       setAnalysis({item,pricing,ebayUrl});
 
@@ -497,7 +530,7 @@ Return ONLY valid JSON:
       saveItems(updated);
 
       // SMS
-      setStatus('Sending you a text…');
+      setStatus('Sending your text…');
       const fn=name.split(' ')[0];
       await api.sms(phone,`Hey ${fn}! Your Huck listing is live 🛫
 
@@ -726,8 +759,9 @@ We'll text you the second it sells — with the buyer's address and your prepaid
           <h2 style={{fontSize:20,fontWeight:800,letterSpacing:'-.5px',marginBottom:7}}>On it.</h2>
           <p style={{fontSize:13,color:C.coral,fontWeight:600,animation:'pulse 1.6s ease infinite',marginBottom:36}}>{status}</p>
           <div style={{display:'flex',flexDirection:'column',gap:2,textAlign:'left'}}>
-            {[['🏷','Reading your tags','Reading'],['✂️','Cleaning the photo','Cleaning'],
-              ['🔎','Analyzing your item','Analyzing'],['💰','Researching the price','Researching'],
+            {[['✂️','Cleaning the photo','Cleaning'],
+              ['📋','Building your listing','Analyzing'],
+              ['💰','Pricing your item','Researching'],
               ['📱','Sending your text','Sending']].map(([icon,label,match])=>{
               const active=status.toLowerCase().includes(match.toLowerCase());
               return (
