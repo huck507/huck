@@ -299,11 +299,17 @@ const api = {
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
-      body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens, messages }),
+      body: JSON.stringify({ model:'claude-sonnet-4-5', max_tokens, messages }),
     });
     const d = await r.json();
     const t = d.content?.find(b=>b.type==='text')?.text||'';
-    return JSON.parse(t.replace(/```json|```/g,'').trim());
+    if (!t) throw new Error(d.error?.message || JSON.stringify(d));
+    const clean = t.replace(/```json|```/g,'').trim();
+    try {
+      return JSON.parse(clean);
+    } catch(e) {
+      throw new Error('Claude returned: ' + clean.substring(0, 200));
+    }
   },
 
   // remove.bg and SMS still go through proxy (hides those keys)
