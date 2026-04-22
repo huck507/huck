@@ -1,0 +1,17 @@
+{
+  "functions": {
+    "api/claude.js": {
+      "maxDuration": 30
+    },
+    "api/removebg.js": {
+      "maxDuration": 30
+    },
+    "api/sms.js": {
+      "maxDuration": 10
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
